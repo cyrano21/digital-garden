@@ -1,4 +1,4 @@
-name: Temporary real skills and agents export
+name: Temporary real Shyft skills and agents export
 
 on:
   push:
@@ -23,14 +23,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq rsync zip jq >/dev/null
           mkdir -p "$OUT/skills" "$OUT/agents" "$OUT/meta" "$RUNNER_TEMP/repos"
+          cat > "$OUT/meta/ABOUT.txt" <<'TXT'
+          Source index: https://shyft.ai/repos
+          This export copies real public source files. It does not execute code from any source repository.
+          Skill folders are included only when a real SKILL.md exists in the source repository.
+          Agent OS repositories are copied as source snapshots, excluding only build/cache/.git directories.
+          TXT
 
-      - name: Collect real skill folders
+      - name: Collect real Shyft skill folders
         shell: bash
         run: |
           set -u
           SKILL_REPOS=(
-            "byhartvig/agent-skills-collection"
-            "CherryHQ/cherry-studio"
             "obra/superpowers"
             "affaan-m/ecc"
             "anthropics/anthropic-cookbook"
@@ -84,6 +88,8 @@ jobs:
             "claude-dev-code/claude-skills-linkedin"
             "xxczaki/wicek"
             "logiiiii/unity-agent-skills"
+            "open-source/accelerator"
+            "open-source/sponsors"
           )
           : > "$OUT/meta/skill-sources.tsv"
           : > "$OUT/meta/skill-clone-failures.txt"
@@ -91,7 +97,7 @@ jobs:
             slug="${repo//\//__}"
             dir="$RUNNER_TEMP/repos/skill-$slug"
             echo "==> $repo"
-            if ! git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
+            if ! GIT_LFS_SKIP_SMUDGE=1 git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
               echo "$repo" >> "$OUT/meta/skill-clone-failures.txt"
               continue
             fi
@@ -99,15 +105,14 @@ jobs:
             while IFS= read -r -d '' skillmd; do
               parent="$(dirname "$skillmd")"
               rel="${parent#$dir/}"
-              safe_rel="${rel//../__}"
-              dest="$OUT/skills/$slug/$safe_rel"
+              dest="$OUT/skills/$slug/$rel"
               mkdir -p "$(dirname "$dest")"
-              rsync -a --delete \
+              rsync -aL \
                 --exclude '.git' --exclude 'node_modules' --exclude '.next' \
                 --exclude 'dist' --exclude 'build' --exclude '__pycache__' \
                 "$parent/" "$dest/"
               count=$((count+1))
-            done < <(find "$dir" -type f -name 'SKILL.md' -print0)
+            done < <(find "$dir" \( -type f -o -type l \) -name 'SKILL.md' -print0)
             printf '%s\t%s\n' "$repo" "$count" >> "$OUT/meta/skill-sources.tsv"
           done
 
@@ -142,13 +147,13 @@ jobs:
             slug="${repo//\//__}"
             dir="$RUNNER_TEMP/repos/agent-$slug"
             echo "==> $repo"
-            if ! git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
+            if ! GIT_LFS_SKIP_SMUDGE=1 git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
               echo "$repo" >> "$OUT/meta/agent-clone-failures.txt"
               continue
             fi
             dest="$OUT/agents/$slug"
             mkdir -p "$dest"
-            rsync -a \
+            rsync -aL \
               --exclude '.git' --exclude 'node_modules' --exclude '.next' \
               --exclude 'dist' --exclude 'build' --exclude '__pycache__' \
               "$dir/" "$dest/"
@@ -163,31 +168,40 @@ jobs:
           set -euo pipefail
           skill_count=$(find "$OUT/skills" -type f -name 'SKILL.md' | wc -l | tr -d ' ')
           skill_dirs=$(find "$OUT/skills" -type f -name 'SKILL.md' -printf '%h\n' | sort -u | wc -l | tr -d ' ')
+          skill_lfs=$(find "$OUT/skills" -type f -name 'SKILL.md' -print0 | xargs -0 -r grep -Il '^version https://git-lfs.github.com/spec/v1$' | wc -l | tr -d ' ' || true)
           agent_repo_count=$(find "$OUT/agents" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
           agent_file_count=$(find "$OUT/agents" -type f | wc -l | tr -d ' ')
           agentish_count=$(find "$OUT/agents" -type f \( -iname '*agent*' -o -path '*/agents/*' -o -name 'AGENTS.md' \) | wc -l | tr -d ' ')
+          agent_lfs=$(grep -RIl '^version https://git-lfs.github.com/spec/v1$' "$OUT/agents" 2>/dev/null | wc -l | tr -d ' ' || true)
+
+          test "$skill_count" -gt 0
+          test "$skill_lfs" -eq 0
 
           cd "$OUT"
-          zip -q -r -9 real-skills.zip skills meta/skill-sources.tsv meta/skill-clone-failures.txt
-          zip -q -r -6 real-shyft-agents.zip agents meta/agent-sources.tsv meta/agent-clone-failures.txt
+          zip -q -r -9 real-shyft-skills.zip skills meta/ABOUT.txt meta/skill-sources.tsv meta/skill-clone-failures.txt
+          zip -q -r -6 real-shyft-agents.zip agents meta/ABOUT.txt meta/agent-sources.tsv meta/agent-clone-failures.txt
 
-          zip_skill_count=$(unzip -Z1 real-skills.zip | grep -c '/SKILL.md$' || true)
+          zip_skill_count=$(unzip -Z1 real-shyft-skills.zip | grep -c '/SKILL.md$' || true)
           if [ "$zip_skill_count" -ne "$skill_count" ]; then
             echo "ZIP skill count mismatch: disk=$skill_count zip=$zip_skill_count" >&2
             exit 1
           fi
 
-          skills_sha=$(sha256sum real-skills.zip | awk '{print $1}')
+          skills_sha=$(sha256sum real-shyft-skills.zip | awk '{print $1}')
           agents_sha=$(sha256sum real-shyft-agents.zip | awk '{print $1}')
           cat > manifest.json <<JSON
           {
+            "source_index": "https://shyft.ai/repos",
             "generated_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "real_skill_md_files": $skill_count,
             "unique_skill_directories": $skill_dirs,
             "skill_md_files_verified_inside_zip": $zip_skill_count,
+            "skill_md_lfs_pointer_files": $skill_lfs,
             "agent_os_repositories_copied": $agent_repo_count,
             "agent_source_files": $agent_file_count,
             "agent_named_or_agent_directory_files": $agentish_count,
+            "agent_lfs_pointer_files": $agent_lfs,
+            "source_code_executed": false,
             "skills_zip_sha256": "$skills_sha",
             "agents_zip_sha256": "$agents_sha"
           }
@@ -199,13 +213,14 @@ jobs:
       - name: Upload verified export
         uses: actions/upload-artifact@v4
         with:
-          name: real-skills-agents-export
+          name: real-shyft-skills-agents-export
           path: |
-            export/real-skills.zip
+            export/real-shyft-skills.zip
             export/real-shyft-agents.zip
             export/manifest.json
             export/meta/*.tsv
             export/meta/*failures.txt
+            export/meta/ABOUT.txt
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
