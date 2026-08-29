@@ -1,0 +1,295 @@
+name: Shyft real skills and agents export
+
+on:
+  push:
+    branches:
+      - tmp/shyft-real-export-20260829
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Build real Shyft export
+        shell: bash
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shyft-builder"
+          cd "$RUNNER_TEMP/shyft-builder"
+
+          cat > sources.tsv <<'EOF'
+          skills	obra/superpowers
+          skills	affaan-m/ecc
+          skills	anthropics/anthropic-cookbook
+          skills	nextlevelbuilder/ui-ux-pro-max-skill
+          skills	shareai-lab/learn-claude-code
+          skills	addyosmani/agent-skills
+          skills	composiohq/awesome-claude-skills
+          skills	shanraisshan/claude-code-best-practice
+          skills	santifer/career-ops
+          skills	asgeirtj/system_prompts_leaks
+          skills	leonxlnx/taste-skill
+          skills	k-dense-ai/scientific-agent-skills
+          skills	voltagent/awesome-agent-skills
+          skills	jimliu/baoyu-skills
+          skills	alirezarezvani/claude-skills
+          skills	yusufkaraaslan/skill_seekers
+          skills	travisvn/awesome-claude-skills
+          skills	orchestra-research/ai-research-skills
+          skills	jeffallan/claude-skills
+          skills	nidhinjs/prompt-master
+          skills	ayghri/i-have-adhd
+          skills	ikaijua/awesome-aitools
+          skills	deanpeters/product-manager-skills
+          skills	agents365-ai/drawio-skill
+          skills	0xnyk/council-of-high-intelligence
+          skills	lackeyjb/playwright-skill
+          skills	rohitg00/pro-workflow
+          skills	composio-community/awesome-claude-plugins
+          skills	timescale/pg-aiguide
+          skills	composiohq/awesome-claude-plugins
+          skills	wondelai/skills
+          skills	agricidaniel/claude-blog
+          skills	internet-court/internet-court-skill
+          skills	quemsah/awesome-claude-plugins
+          skills	ccplugins/awesome-claude-code-plugins
+          skills	keskinonur/claude-code-ios-dev-guide
+          skills	fcakyon/claude-codex-settings
+          skills	miantiao-me/aigc-weekly
+          skills	minhnv0807/ai-business-skills
+          skills	hainrixz/the-architect
+          skills	zxkane/aws-skills
+          skills	odradekai/bundles-forge
+          skills	akseolabs-seo/ak-threads-booster
+          skills	jaechang-hits/sciagent-skills
+          skills	indranilbanerjee/digital-marketing-pro
+          skills	rrezartprebreza/spring-boot-skills
+          skills	smnandre/symfony-ux-skills
+          skills	solanabr/solana-ai-kit
+          skills	artemnovichkov/xcode-tools-docs
+          skills	wizzy15/obsidian-skill
+          skills	claude-dev-code/claude-skills-linkedin
+          skills	xxczaki/wicek
+          skills	logiiiii/unity-agent-skills
+          skills	open-source/accelerator
+          skills	open-source/sponsors
+          agent-os	nousresearch/hermes-agent
+          agent-os	juliusbrussee/caveman
+          agent-os	rtk-ai/rtk
+          agent-os	code-yeongyu/oh-my-openagent
+          agent-os	ruvnet/ruflo
+          agent-os	headroomlabs-ai/headroom
+          agent-os	panniantong/agent-reach
+          agent-os	nanocoai/nanoclaw
+          agent-os	kyegomez/openmythos
+          agent-os	activeloopai/hivemind
+          agent-os	nagisanzenin/engram
+          agent-os	rsmdt/the-startup
+          agent-os	0xwilliamortiz/agents-council
+          agent-os	ethanhq/cc-fleet
+          agent-os	fusengine/agents
+          agent-os	doctordean/lazarus
+          agent-os	mnifzied-create/agentloop
+          agent-os	jitangupta/cowork-boilerplate
+          EOF
+
+          cat > build.py <<'PY'
+          import csv, hashlib, json, os, pathlib, re, shutil, subprocess, sys, zipfile
+
+          base = pathlib.Path.cwd()
+          out = base / 'shyft-real-export'
+          work = base / 'work'
+          for p in [out, work]:
+              p.mkdir(parents=True, exist_ok=True)
+          for p in ['skills','agents','cherry-studio-skill-zips','licenses','manifests']:
+              (out/p).mkdir(parents=True, exist_ok=True)
+
+          skill_rows=[]
+          agent_rows=[]
+          source_rows=[]
+          failures=[]
+          seen_skill_hashes={}
+          platform_markers={'claude','codex','cursor','gemini','kiro','opencode','vscode','zed','qwen','trae','hermes','openclaw','pi'}
+
+          def safe_repo(repo): return repo.replace('/','__')
+          def run(cmd, cwd=None): return subprocess.run(cmd, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          def sha_file(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''): h.update(chunk)
+              return h.hexdigest()
+          def tree_stats(root):
+              files=0; size=0
+              for f in root.rglob('*'):
+                  if f.is_file() and not f.is_symlink():
+                      files += 1
+                      try: size += f.stat().st_size
+                      except OSError: pass
+              return files,size
+          def infer_platform(rel):
+              parts=[p.lower().lstrip('.') for p in pathlib.PurePosixPath(rel).parts]
+              for p in parts:
+                  if p in platform_markers: return p
+              return 'generic'
+          def copytree_clean(src,dst):
+              shutil.copytree(src,dst,dirs_exist_ok=True,ignore=shutil.ignore_patterns('.git','node_modules','__pycache__','.venv','venv'))
+          def zip_skill(src, zpath):
+              zpath.parent.mkdir(parents=True,exist_ok=True)
+              with zipfile.ZipFile(zpath,'w',zipfile.ZIP_DEFLATED) as z:
+                  for f in src.rglob('*'):
+                      if f.is_file() and not f.is_symlink():
+                          z.write(f, pathlib.Path(src.name)/f.relative_to(src))
+
+          sources=[]
+          with open('sources.tsv',encoding='utf-8') as f:
+              for line in f:
+                  line=line.strip()
+                  if not line: continue
+                  cat,repo=line.split('\t',1); sources.append((cat,repo))
+
+          for idx,(category,repo) in enumerate(sources,1):
+              safe=safe_repo(repo); clone=work/safe
+              print(f'[{idx}/{len(sources)}] {category} {repo}', flush=True)
+              cp=run(['git','clone','--depth','1','--single-branch','--filter=blob:none',f'https://github.com/{repo}.git',str(clone)])
+              if cp.returncode:
+                  failures.append({'repo':repo,'category':category,'error':cp.stdout[-4000:]})
+                  continue
+              commit=run(['git','rev-parse','HEAD'],cwd=clone).stdout.strip()
+              source_rows.append({'repo':repo,'shyft_category':category,'commit':commit,'github':f'https://github.com/{repo}'})
+
+              # Preserve common license/notice files.
+              licdst=out/'licenses'/safe
+              for pat in ['LICENSE*','NOTICE*','COPYING*','README*']:
+                  for f in clone.glob(pat):
+                      if f.is_file():
+                          licdst.mkdir(parents=True,exist_ok=True)
+                          shutil.copy2(f,licdst/f.name)
+
+              # REAL standard skills: every directory that physically contains SKILL.md.
+              for skill_md in clone.rglob('SKILL.md'):
+                  if '.git' in skill_md.parts: continue
+                  skill_dir=skill_md.parent
+                  rel=skill_dir.relative_to(clone).as_posix()
+                  dest=out/'skills'/safe/rel
+                  try:
+                      copytree_clean(skill_dir,dest)
+                      files,size=tree_stats(dest)
+                      smd=dest/'SKILL.md'
+                      sh=sha_file(smd)
+                      duplicate_of=seen_skill_hashes.get(sh,'')
+                      if not duplicate_of: seen_skill_hashes[sh]=f'{repo}:{rel}'
+                      zname=re.sub(r'[^A-Za-z0-9._-]+','__',rel) or 'root'
+                      zpath=out/'cherry-studio-skill-zips'/safe/f'{zname}.zip'
+                      zip_skill(dest,zpath)
+                      skill_rows.append({'repo':repo,'commit':commit,'path':rel,'platform':infer_platform(rel),'files':files,'bytes':size,'skill_md_sha256':sh,'duplicate_of':duplicate_of,'cherry_zip':zpath.relative_to(out).as_posix()})
+                  except Exception as e:
+                      failures.append({'repo':repo,'category':'skill-copy','path':rel,'error':repr(e)})
+
+              # REAL agent material. Preserve files under actual agent/subagent directories.
+              agent_roots=[]
+              for d in clone.rglob('*'):
+                  if not d.is_dir() or '.git' in d.parts: continue
+                  b=d.name.lower()
+                  if b in {'agents','subagents'}:
+                      # Avoid selecting nested agent roots twice.
+                      if not any(a in d.parents for a in agent_roots): agent_roots.append(d)
+                  elif b == '.agents':
+                      if not any(a in d.parents for a in agent_roots): agent_roots.append(d)
+              copied_agent_paths=set()
+              for aroot in agent_roots:
+                  rel=aroot.relative_to(clone).as_posix()
+                  dest=out/'agents'/safe/rel
+                  try:
+                      # copy real tree, but don't duplicate skill libraries into agent export
+                      shutil.copytree(aroot,dest,dirs_exist_ok=True,ignore=shutil.ignore_patterns('.git','node_modules','skills','.skills','__pycache__','.venv','venv'))
+                      files,size=tree_stats(dest)
+                      if files:
+                          agent_rows.append({'repo':repo,'commit':commit,'path':rel,'platform':infer_platform(rel),'kind':'agent-directory','files':files,'bytes':size})
+                          copied_agent_paths.add(rel)
+                  except Exception as e:
+                      failures.append({'repo':repo,'category':'agent-copy','path':rel,'error':repr(e)})
+
+              # Root/platform agent definition files that may live outside an agents/ directory.
+              agent_names={'AGENTS.md','agent.json','agent.yaml','agent.yml','agent.md','SOUL.md'}
+              for f in clone.rglob('*'):
+                  if not f.is_file() or '.git' in f.parts: continue
+                  if f.name not in agent_names: continue
+                  rel=f.relative_to(clone).as_posix()
+                  # If already under a copied agent root, no need to duplicate.
+                  if any(rel==r or rel.startswith(r.rstrip('/')+'/') for r in copied_agent_paths): continue
+                  dest=out/'agents'/safe/rel
+                  try:
+                      dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,dest)
+                      agent_rows.append({'repo':repo,'commit':commit,'path':rel,'platform':infer_platform(rel),'kind':'agent-file','files':1,'bytes':dest.stat().st_size})
+                  except Exception as e:
+                      failures.append({'repo':repo,'category':'agent-file-copy','path':rel,'error':repr(e)})
+
+              shutil.rmtree(clone,ignore_errors=True)
+
+          # Manifests
+          def write_csv(name,rows):
+              path=out/'manifests'/name
+              if not rows:
+                  path.write_text('',encoding='utf-8'); return
+              keys=[]
+              for r in rows:
+                  for k in r:
+                      if k not in keys: keys.append(k)
+              with open(path,'w',newline='',encoding='utf-8') as f:
+                  w=csv.DictWriter(f,fieldnames=keys); w.writeheader(); w.writerows(rows)
+          write_csv('skills.csv',skill_rows)
+          write_csv('agents.csv',agent_rows)
+          write_csv('sources.csv',source_rows)
+          write_csv('failures.csv',failures)
+          summary={
+              'shyft_source':'https://shyft.ai/repos',
+              'source_repositories_requested':len(sources),
+              'source_repositories_cloned':len(source_rows),
+              'failed_repositories':len([x for x in failures if x.get('category') in {'skills','agent-os'}]),
+              'real_skill_directories':len(skill_rows),
+              'real_skill_md_files':len(skill_rows),
+              'real_agent_entries':len(agent_rows),
+              'cherry_individual_skill_zips':len(skill_rows),
+              'note':'No generated/fake skill bodies: every exported skill contains a source SKILL.md from a Shyft-listed repository. Agents are copied only from real agent directories/files in those repositories.'
+          }
+          (out/'manifests'/'summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8')
+          (out/'README.txt').write_text(
+              'EXPORT REEL DEPUIS LES DEPOTS REFERENCES PAR SHYFT\n\n'
+              'skills/ : vrais dossiers contenant SKILL.md\n'
+              'agents/ : vrais dossiers/fichiers agents détectés dans les mêmes sources\n'
+              'cherry-studio-skill-zips/ : un ZIP par vrai skill, avec SKILL.md inclus\n'
+              'manifests/ : provenance, commits, tailles et échecs\n\n'
+              'Aucun contenu de skill/agent n’est inventé par ce constructeur.\n',encoding='utf-8')
+          print(json.dumps(summary,indent=2),flush=True)
+          PY
+
+          python build.py
+
+      - name: Verify export contains real skills
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/shyft-builder/shyft-real-export"
+          test -f "$ROOT/manifests/summary.json"
+          COUNT=$(find "$ROOT/skills" -type f -name SKILL.md | wc -l)
+          echo "Real SKILL.md count: $COUNT"
+          test "$COUNT" -gt 100
+          python - <<'PY'
+          import json, os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'shyft-builder','shyft-real-export','manifests','summary.json')
+          print(open(p,encoding='utf-8').read())
+          PY
+
+      - name: Upload real Shyft export artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shyft-real-skills-agents
+          path: ${{ runner.temp }}/shyft-builder/shyft-real-export
+          include-hidden-files: true
+          compression-level: 6
+          retention-days: 1
