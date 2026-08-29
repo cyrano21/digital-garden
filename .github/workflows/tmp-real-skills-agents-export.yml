@@ -1,0 +1,211 @@
+name: Temporary real skills and agents export
+
+on:
+  push:
+    branches:
+      - tmp/real-skills-agents-export-20260829
+
+permissions:
+  contents: read
+
+env:
+  OUT: ${{ github.workspace }}/export
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rsync zip jq >/dev/null
+          mkdir -p "$OUT/skills" "$OUT/agents" "$OUT/meta" "$RUNNER_TEMP/repos"
+
+      - name: Collect real skill folders
+        shell: bash
+        run: |
+          set -u
+          SKILL_REPOS=(
+            "byhartvig/agent-skills-collection"
+            "CherryHQ/cherry-studio"
+            "obra/superpowers"
+            "affaan-m/ecc"
+            "anthropics/anthropic-cookbook"
+            "nextlevelbuilder/ui-ux-pro-max-skill"
+            "shareai-lab/learn-claude-code"
+            "addyosmani/agent-skills"
+            "composiohq/awesome-claude-skills"
+            "shanraisshan/claude-code-best-practice"
+            "santifer/career-ops"
+            "asgeirtj/system_prompts_leaks"
+            "leonxlnx/taste-skill"
+            "k-dense-ai/scientific-agent-skills"
+            "voltagent/awesome-agent-skills"
+            "jimliu/baoyu-skills"
+            "alirezarezvani/claude-skills"
+            "yusufkaraaslan/skill_seekers"
+            "travisvn/awesome-claude-skills"
+            "orchestra-research/ai-research-skills"
+            "jeffallan/claude-skills"
+            "nidhinjs/prompt-master"
+            "ayghri/i-have-adhd"
+            "leutenegger/book-to-skill"
+            "ikaijua/awesome-aitools"
+            "deanpeters/product-manager-skills"
+            "agents365-ai/drawio-skill"
+            "0xnyk/council-of-high-intelligence"
+            "lackeyjb/playwright-skill"
+            "rohitg00/pro-workflow"
+            "composio-community/awesome-claude-plugins"
+            "composiohq/awesome-claude-plugins"
+            "wondelai/skills"
+            "agricidaniel/claude-blog"
+            "internet-court/internet-court-skill"
+            "quemsah/awesome-claude-plugins"
+            "ccplugins/awesome-claude-code-plugins"
+            "keskinonur/claude-code-ios-dev-guide"
+            "fcakyon/claude-codex-settings"
+            "miantiao-me/aigc-weekly"
+            "minhnv0807/ai-business-skills"
+            "hainrixz/the-architect"
+            "zxkane/aws-skills"
+            "odradekai/bundles-forge"
+            "akseolabs-seo/ak-threads-booster"
+            "jaechang-hits/sciagent-skills"
+            "indranilbanerjee/digital-marketing-pro"
+            "rrezartprebreza/spring-boot-skills"
+            "smnandre/symfony-ux-skills"
+            "solanabr/solana-ai-kit"
+            "artemnovichkov/xcode-tools-docs"
+            "wizzy15/obsidian-skill"
+            "claude-dev-code/claude-skills-linkedin"
+            "xxczaki/wicek"
+            "logiiiii/unity-agent-skills"
+          )
+          : > "$OUT/meta/skill-sources.tsv"
+          : > "$OUT/meta/skill-clone-failures.txt"
+          for repo in "${SKILL_REPOS[@]}"; do
+            slug="${repo//\//__}"
+            dir="$RUNNER_TEMP/repos/skill-$slug"
+            echo "==> $repo"
+            if ! git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
+              echo "$repo" >> "$OUT/meta/skill-clone-failures.txt"
+              continue
+            fi
+            count=0
+            while IFS= read -r -d '' skillmd; do
+              parent="$(dirname "$skillmd")"
+              rel="${parent#$dir/}"
+              safe_rel="${rel//../__}"
+              dest="$OUT/skills/$slug/$safe_rel"
+              mkdir -p "$(dirname "$dest")"
+              rsync -a --delete \
+                --exclude '.git' --exclude 'node_modules' --exclude '.next' \
+                --exclude 'dist' --exclude 'build' --exclude '__pycache__' \
+                "$parent/" "$dest/"
+              count=$((count+1))
+            done < <(find "$dir" -type f -name 'SKILL.md' -print0)
+            printf '%s\t%s\n' "$repo" "$count" >> "$OUT/meta/skill-sources.tsv"
+          done
+
+      - name: Collect Shyft Agent OS repositories
+        shell: bash
+        run: |
+          set -u
+          AGENT_REPOS=(
+            "nousresearch/hermes-agent"
+            "juliusbrussee/caveman"
+            "rtk-ai/rtk"
+            "code-yeongyu/oh-my-openagent"
+            "ruvnet/ruflo"
+            "headroomlabs-ai/headroom"
+            "panniantong/agent-reach"
+            "wshobson/agents"
+            "nanocoai/nanoclaw"
+            "kyegomez/openmythos"
+            "activeloopai/hivemind"
+            "nagisanzenin/engram"
+            "rsmdt/the-startup"
+            "0xwilliamortiz/agents-council"
+            "ethanhq/cc-fleet"
+            "fusengine/agents"
+            "doctordean/lazarus"
+            "mnifzied-create/agentloop"
+            "jitangupta/cowork-boilerplate"
+          )
+          : > "$OUT/meta/agent-sources.tsv"
+          : > "$OUT/meta/agent-clone-failures.txt"
+          for repo in "${AGENT_REPOS[@]}"; do
+            slug="${repo//\//__}"
+            dir="$RUNNER_TEMP/repos/agent-$slug"
+            echo "==> $repo"
+            if ! git clone -q --depth 1 "https://github.com/$repo.git" "$dir"; then
+              echo "$repo" >> "$OUT/meta/agent-clone-failures.txt"
+              continue
+            fi
+            dest="$OUT/agents/$slug"
+            mkdir -p "$dest"
+            rsync -a \
+              --exclude '.git' --exclude 'node_modules' --exclude '.next' \
+              --exclude 'dist' --exclude 'build' --exclude '__pycache__' \
+              "$dir/" "$dest/"
+            files=$(find "$dest" -type f | wc -l | tr -d ' ')
+            agentish=$(find "$dest" -type f \( -iname '*agent*' -o -path '*/agents/*' -o -name 'AGENTS.md' \) | wc -l | tr -d ' ')
+            printf '%s\t%s\t%s\n' "$repo" "$files" "$agentish" >> "$OUT/meta/agent-sources.tsv"
+          done
+
+      - name: Build and verify archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          skill_count=$(find "$OUT/skills" -type f -name 'SKILL.md' | wc -l | tr -d ' ')
+          skill_dirs=$(find "$OUT/skills" -type f -name 'SKILL.md' -printf '%h\n' | sort -u | wc -l | tr -d ' ')
+          agent_repo_count=$(find "$OUT/agents" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+          agent_file_count=$(find "$OUT/agents" -type f | wc -l | tr -d ' ')
+          agentish_count=$(find "$OUT/agents" -type f \( -iname '*agent*' -o -path '*/agents/*' -o -name 'AGENTS.md' \) | wc -l | tr -d ' ')
+
+          cd "$OUT"
+          zip -q -r -9 real-skills.zip skills meta/skill-sources.tsv meta/skill-clone-failures.txt
+          zip -q -r -6 real-shyft-agents.zip agents meta/agent-sources.tsv meta/agent-clone-failures.txt
+
+          zip_skill_count=$(unzip -Z1 real-skills.zip | grep -c '/SKILL.md$' || true)
+          if [ "$zip_skill_count" -ne "$skill_count" ]; then
+            echo "ZIP skill count mismatch: disk=$skill_count zip=$zip_skill_count" >&2
+            exit 1
+          fi
+
+          skills_sha=$(sha256sum real-skills.zip | awk '{print $1}')
+          agents_sha=$(sha256sum real-shyft-agents.zip | awk '{print $1}')
+          cat > manifest.json <<JSON
+          {
+            "generated_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "real_skill_md_files": $skill_count,
+            "unique_skill_directories": $skill_dirs,
+            "skill_md_files_verified_inside_zip": $zip_skill_count,
+            "agent_os_repositories_copied": $agent_repo_count,
+            "agent_source_files": $agent_file_count,
+            "agent_named_or_agent_directory_files": $agentish_count,
+            "skills_zip_sha256": "$skills_sha",
+            "agents_zip_sha256": "$agents_sha"
+          }
+          JSON
+          cat manifest.json
+          echo "Skills failures:"; cat meta/skill-clone-failures.txt || true
+          echo "Agent failures:"; cat meta/agent-clone-failures.txt || true
+
+      - name: Upload verified export
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-skills-agents-export
+          path: |
+            export/real-skills.zip
+            export/real-shyft-agents.zip
+            export/manifest.json
+            export/meta/*.tsv
+            export/meta/*failures.txt
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
