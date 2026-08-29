@@ -1,0 +1,66 @@
+name: Temporary physical 3000 skills export
+
+on:
+  push:
+    branches:
+      - tmp/real-3000-skills-fast-20260829
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone source without executing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 https://github.com/byhartvig/agent-skills-collection.git source
+          rm -rf source/.git
+
+      - name: Count and validate physical skills
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find source -type f -name SKILL.md | wc -l | tr -d ' ')
+          echo "physical SKILL.md count=$count"
+          test "$count" -ge 3000
+          find source -type f -name SKILL.md | sort > SKILL-MANIFEST.txt
+          unique_dirs=$(sed 's#/SKILL.md$##' SKILL-MANIFEST.txt | sort -u | wc -l | tr -d ' ')
+          cat > manifest.json <<JSON
+          {
+            "source": "https://github.com/byhartvig/agent-skills-collection",
+            "physical_skill_md_files": $count,
+            "unique_skill_directories": $unique_dirs,
+            "validation": "find source -type f -name SKILL.md; required >= 3000",
+            "code_executed_from_source": false
+          }
+          JSON
+
+      - name: Create ZIP and verify ZIP contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -q -r -6 real-3000-plus-skills.zip source SKILL-MANIFEST.txt manifest.json
+          disk_count=$(find source -type f -name SKILL.md | wc -l | tr -d ' ')
+          zip_count=$(unzip -Z1 real-3000-plus-skills.zip | grep -c '/SKILL.md$' || true)
+          test "$disk_count" -eq "$zip_count"
+          sha=$(sha256sum real-3000-plus-skills.zip | awk '{print $1}')
+          tmp=$(mktemp)
+          jq --arg sha "$sha" --argjson zip_count "$zip_count" '. + {zip_verified_skill_md_files:$zip_count, zip_sha256:$sha}' manifest.json > "$tmp"
+          mv "$tmp" manifest.json
+          cat manifest.json
+
+      - name: Upload verified ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-3000-plus-skills
+          path: |
+            real-3000-plus-skills.zip
+            manifest.json
+            SKILL-MANIFEST.txt
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
